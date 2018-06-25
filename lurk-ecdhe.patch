@@ -1,0 +1,85 @@
+diff -u a/nginx-1.12.2/auto/lib/openssl/conf b/nginx-1.12.2/auto/lib/openssl/conf
+--- a/nginx-1.12.2/auto/lib/openssl/conf  2017-10-17 15:16:37.000000000 +0200
++++ b/nginx-1.12.2/auto/lib/openssl/conf  2018-05-02 14:07:11.021021823 +0200
+@@ -40,6 +40,7 @@
+             CORE_DEPS="$CORE_DEPS $OPENSSL/.openssl/include/openssl/ssl.h"
+             CORE_LIBS="$CORE_LIBS $OPENSSL/.openssl/lib/libssl.a"
+             CORE_LIBS="$CORE_LIBS $OPENSSL/.openssl/lib/libcrypto.a"
++            CORE_LIBS="$CORE_LIBS /root/LURK/lurk/liblurk.a"
+             CORE_LIBS="$CORE_LIBS $NGX_LIBDL"
+
+             if [ "$NGX_PLATFORM" = win32 ]; then
+
+diff -u a/openssl-1.1.0h/Configurations/unix-Makefile.tmpl b/openssl-1.1.0h/Configurations/unix-Makefile.tmpl
+--- a/openssl-1.1.0h/Configurations/unix-Makefile.tmpl  2018-03-27 15:50:37.000000000 +0200
++++ b/openssl-1.1.0h/Configurations/unix-Makefile.tmpl  2018-05-02 11:19:41.017396215 +0200
+@@ -178,7 +178,7 @@
+ CFLAGS_Q={- $cflags2 =~ s|([\\"])|\\$1|g; $cflags2 -} {- $config{cflags} -}
+ LDFLAGS= {- $target{lflags} -}
+ PLIB_LDFLAGS= {- $target{plib_lflags} -}
+-EX_LIBS= {- $target{ex_libs} -} {- $config{ex_libs} -}
++EX_LIBS= {- $target{ex_libs} -} {- $config{ex_libs} -} {- "-L/root/LURK/lurk -llurk" -} # static libraries only used in Unix
+ LIB_CFLAGS={- $target{shared_cflag} || "" -}
+ LIB_LDFLAGS={- $target{shared_ldflag}." ".$config{shared_ldflag} -}
+ DSO_CFLAGS={- $target{shared_cflag} || "" -}
+
+diff -u a/openssl-1.1.0h/ssl/statem/statem_srvr.c b/openssl-1.1.0h/ssl/statem/statem_srvr.c
+--- a/openssl-1.1.0h/ssl/statem/statem_srvr.c   2018-03-27 15:50:40.000000000 +0200
++++ b/openssl-1.1.0h/ssl/statem/statem_srvr.c   2018-05-02 14:50:41.704924568 +0200
+@@ -1888,8 +1888,10 @@
+         *p = encodedlen;
+         p += 1;
+         memcpy(p, encodedPoint, encodedlen);
++#ifdef OPENSSL_NO_LURK
+         OPENSSL_free(encodedPoint);
+         encodedPoint = NULL;
++#endif
+         p += encodedlen;
+     }
+ #endif
+@@ -1915,6 +1917,37 @@
+ #ifdef SSL_DEBUG
+             fprintf(stderr, "Using hash %s\n", EVP_MD_name(md));
+ #endif
++
++#ifndef OPENSSL_NO_LURK
++            /* LURK added as library so header not included, reference to the function and constant with extern */
++            // Extern to const or include .h to avoid extern ?
++            extern const size_t LURK_TLS12_MAX_SIGNATURE_SIZE;
++            extern int lurk_client_ecdhe(uint8_t *client_random, uint8_t *server_random, /*uint8_t curve_type,*/
++                                uint16_t named_curve, uint8_t public_length, uint8_t *public, uint8_t point_rG,
++                                uint8_t point_tG, uint8_t sig_hash, uint8_t sig_sig, uint8_t *signed_params, size_t *signed_length);
++
++            /* Signature algorithms are: hash = *(p-2) and sig = *(p-1). Obtained previously from 'tls12_get_sigandhash' */
++            unsigned char* signed_params = OPENSSL_malloc(LURK_TLS12_MAX_SIGNATURE_SIZE);
++            size_t siglen;
++            // Request signed parameters from LURK server (both RSA and ECDSA signatures are available)
++            if (lurk_client_ecdhe(s->s3->client_random, s->s3->server_random, curve_id, encodedlen, encodedPoint, 0x00, 0x00, *(p-2), *(p-1), signed_params, &siglen) == 1) {
++                // Failed to sign parameters, TODO: Create new SSL error ?
++                SSLerr(SSL_F_TLS_CONSTRUCT_SERVER_KEY_EXCHANGE,
++                        SSL_R_SIGNATURE_ALGORITHMS_ERROR);
++                goto f_err;
++            }
++            // TODO: Don't use SSL_USE_SIGALGS -> modify OPENSSL to avoid interactions with private key
++            memcpy(&(p[2]), signed_params, siglen); // copy signed parameters to message
++            s2n(siglen, p);
++            n += siglen + 2;
++            if (SSL_USE_SIGALGS(s))
++                n += 2;
++            OPENSSL_free(signed_params);
++            // Next 2 lines have been moved from where encodedPoint is copied to the message
++            OPENSSL_free(encodedPoint);
++            encodedPoint = NULL;
++
++#else
+             if (EVP_SignInit_ex(md_ctx, md, NULL) <= 0
+                 || EVP_SignUpdate(md_ctx, &(s->s3->client_random[0]),
+                                   SSL3_RANDOM_SIZE) <= 0
+@@ -1931,6 +1964,7 @@
+             n += i + 2;
+             if (SSL_USE_SIGALGS(s))
+                 n += 2;
++#endif
+         } else {
+             /* Is this error check actually needed? */
+             al = SSL_AD_HANDSHAKE_FAILURE;
