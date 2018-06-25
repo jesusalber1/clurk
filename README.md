@@ -13,7 +13,7 @@ TODO: Implement missing functionalities (POO + PRF).
 TODO: Identify key with key id and support for multiple keys/certificates (NGINX layer).
 
 ## Patch
-The provided patch shows the changes for OpenSSL and NGINX source codes to support LURK.
+The provided patch shows the changes for OpenSSL and NGINX source codes to support LURK. Note that the patch must be adapted to the actual paths.
 
 ## Configuration
 *This implementation uses OpenSSL 1.1.0h*
